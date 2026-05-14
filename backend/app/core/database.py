@@ -23,8 +23,7 @@ def get_connection():
     Raises:
         psycopg2.OperationalError: Si no puede conectarse a la base de datos.
     """
-    return psycopg2.connect(settings.database_url)
-
+    return psycopg2.connect(str(settings.database_url))
 
 @contextmanager
 def get_db():

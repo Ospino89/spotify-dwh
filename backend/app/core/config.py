@@ -9,6 +9,7 @@ description: Configuracion central de la aplicacion usando pydantic-settings.
 
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AnyHttpUrl, SecretStr, PostgresDsn
 
 # Sube desde app/core/config.py -> app/core -> app -> backend -> raiz del proyecto
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -22,19 +23,19 @@ class Settings(BaseSettings):
     """
 
     # Spotify OAuth
-    spotify_client_id: str
-    spotify_client_secret: str
-    spotify_redirect_uri: str = "http://127.0.0.1:8000/v1/auth/callback"
+    spotify_client_id: SecretStr
+    spotify_client_secret: SecretStr
+    spotify_redirect_uri: AnyHttpUrl
     
 
     # Base de datos
-    database_url: str
+    database_url: PostgresDsn
 
     # App
-    app_name: str = "Spotify DWH API"
-    app_version: str = "1.0.0"
-    secret_key: str
-    frontend_url: str = "http://localhost:3000"
+    app_name: str 
+    app_version: str
+    secret_key: SecretStr
+    frontend_url: AnyHttpUrl
 
     # JWT
     jwt_algorithm: str = "HS256"

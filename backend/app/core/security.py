@@ -55,7 +55,7 @@ async def get_current_user(
             credentials.credentials,
             settings.secret_key,
             algorithms=[settings.jwt_algorithm],
-        )
+        ) 
         spotify_id: str = payload.get("sub")
         if spotify_id is None:
             raise HTTPException(
