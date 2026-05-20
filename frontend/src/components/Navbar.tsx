@@ -1,4 +1,4 @@
-import { Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate } from "react-router-dom";
 import { LogOut } from "lucide-react";
 import { AppLogo } from "./AppLogo";
 
@@ -10,8 +10,14 @@ const links = [
 
 export function Navbar() {
   const navigate = useNavigate();
+
+  const handleLogout = () => {
+    localStorage.removeItem("app_token");
+    navigate("/login");
+  };
+
   return (
-    <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur">
+    <header className="sticky top-0 z-40 border-b border-[#2A2A2A] bg-[#0D0D0D]/80 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
         <Link to="/dashboard" className="flex items-center">
           <AppLogo size="md" />
@@ -21,8 +27,7 @@ export function Navbar() {
             <Link
               key={l.to}
               to={l.to}
-              className="rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
-              activeProps={{ className: "rounded-md px-3 py-1.5 text-sm text-foreground bg-secondary" }}
+              className="rounded-md px-3 py-1.5 text-sm text-[#888888] transition-colors hover:text-white"
             >
               {l.label}
             </Link>
@@ -30,15 +35,15 @@ export function Navbar() {
         </nav>
         <div className="flex items-center gap-3">
           <div className="hidden text-right sm:block">
-            <div className="text-sm font-medium text-foreground">Alex Morgan</div>
-            <div className="text-xs text-muted-foreground">alex@wrapped.app</div>
+            <div className="text-sm font-medium text-white">Alex Morgan</div>
+            <div className="text-xs text-[#888888]">alex@wrapped.app</div>
           </div>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#1DB954] text-sm font-semibold text-black">
             AM
           </div>
           <button
-            onClick={() => navigate({ to: "/login" })}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[#2A2A2A] px-3 py-1.5 text-sm text-[#888888] transition-colors hover:border-[#1DB954] hover:text-[#1DB954]"
             aria-label="Log out"
           >
             <LogOut className="h-4 w-4" />
@@ -52,7 +57,7 @@ export function Navbar() {
 
 export function PageShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[#0D0D0D]">
       <Navbar />
       <main className="mx-auto max-w-7xl px-6 py-8">{children}</main>
     </div>
