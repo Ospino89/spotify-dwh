@@ -41,7 +41,6 @@ def login(conn=Depends(get_db_dependency)):
     """
     state = generate_state()
     verifier, challenge = generate_pkce_pair()
-
     save_pkce_session(conn, state, verifier)
 
     url = build_spotify_auth_url(state, challenge)

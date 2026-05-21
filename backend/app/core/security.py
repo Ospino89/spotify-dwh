@@ -31,8 +31,8 @@ def create_access_token(spotify_id: str) -> str:
         "sub": spotify_id,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
-
+    return jwt.encode(payload, settings.secret_key.get_secret_value(), algorithm=settings.jwt_algorithm)
+    
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
@@ -53,7 +53,7 @@ async def get_current_user(
     try:
         payload = jwt.decode(
             credentials.credentials,
-            settings.secret_key,
+            settings.secret_key.get_secret_value(),
             algorithms=[settings.jwt_algorithm],
         ) 
         spotify_id: str = payload.get("sub")

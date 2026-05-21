@@ -49,13 +49,16 @@ def get_last_cursor(conn, spotify_user_id: str) -> int | None:
             SELECT cursor_next_ms
             FROM dwh.etl_audit
             WHERE spotify_user_id = %s AND status = 'success'
+            AND cursor_next_ms IS NOT NULL
             ORDER BY started_at DESC
             LIMIT 1
             """,
             (spotify_user_id,),
         )
         row = cur.fetchone()
-    return row[0] if row else None
+    if row and row[0]:
+        return row[0] + 1  # +1 ms para excluir el último ya guardado
+    return None
 
 
 def get_max_played_at_ms(conn, spotify_user_id: str) -> int | None:
@@ -87,26 +90,37 @@ def get_max_played_at_ms(conn, spotify_user_id: str) -> int | None:
 # ---------------------------------------------------------------------------
 # Extract
 # ---------------------------------------------------------------------------
-
-def extract_recently_played(token: str, after_ms: int | None = None) -> list[dict]:
+def extract_recently_played(token: str, after_ms: int | None = None) -> tuple[list[dict], int | None]:
     """
-    Llama al endpoint /v1/me/player/recently-played de Spotify y retorna la lista cruda.
-    Si se provee after_ms, solo retorna reproducciones posteriores a ese cursor.
+    Llama al endpoint /v1/me/player/recently-played de Spotify y retorna la lista cruda
+    junto con el cursor 'after' para la proxima ejecucion.
 
     Args:
         token (str): Access token de Spotify (Bearer).
         after_ms (int | None): Cursor Unix ms de la ultima ejecucion. None = primera carga.
 
     Returns:
-        list[dict]: Lista de PlayHistoryObject en formato JSON crudo de Spotify.
+        tuple[list[dict], int | None]: (items, cursor_next_ms) donde cursor_next_ms
+                                       es el cursor 'after' que retorna Spotify.
     """
     params = {"limit": 50}
     if after_ms is not None:
         params["after"] = after_ms
 
     data = spotify_get("/me/player/recently-played", token, params=params)
-    return data.get("items", [])
+    items = data.get("items") or []
 
+    cursors = data.get("cursors") or {}
+    cursor_next = cursors.get("after")
+
+    # Spotify puede devolver cursors: null si no hay novedades tras `after`
+    if cursor_next is None and items:
+        cursor_next = played_at_to_unix_ms(items[0]["played_at"])
+
+    if cursor_next is None:
+        return items, None
+
+    return items, int(cursor_next)
 
 # ---------------------------------------------------------------------------
 # Transform

@@ -9,8 +9,6 @@ description: Orquestador del pipeline ETL completo.
 """
 
 import time
-from datetime import datetime, timezone
-
 import psycopg2.extras
 
 from app.v1.services.auth_service import get_valid_spotify_token
@@ -21,6 +19,8 @@ from app.v1.services.artists_service import (
 )
 from app.v1.services.tracks_service import (
     extract_top_tracks,
+    enrich_tracks_with_popularity,
+    backfill_dim_tracks_popularity,
     transform_top_tracks,
     load_dim_tracks,
 )
@@ -29,13 +29,8 @@ from app.v1.services.history_service import (
     transform_recently_played,
     load_fact_listening_history,
     get_last_cursor,
-    get_max_played_at_ms,
 )
 
-
-# ---------------------------------------------------------------------------
-# Audit helpers
-# ---------------------------------------------------------------------------
 
 def insert_audit_start(conn, spotify_user_id: str, cursor_after_ms: int | None) -> int:
     """
@@ -71,8 +66,8 @@ def update_audit_success(conn, audit_id: int, metrics: dict, cursor_next_ms: int
     Args:
         conn: Conexion activa a PostgreSQL.
         audit_id (int): PK de la fila en etl_audit.
-        metrics (dict): Conteo de registros por tabla (artists_inserted, tracks_inserted, etc.).
-        cursor_next_ms (int | None): MAX(played_at) convertido a ms para la proxima ejecucion.
+        metrics (dict): Conteo de registros por tabla.
+        cursor_next_ms (int | None): Cursor 'after' retornado por Spotify.
 
     Returns:
         None
@@ -136,58 +131,65 @@ def update_audit_error(conn, audit_id: int, error: str, duration_ms: int) -> Non
     conn.commit()
 
 
-# ---------------------------------------------------------------------------
-# Orquestador principal
-# ---------------------------------------------------------------------------
-
 def run_etl(conn, spotify_id: str) -> dict:
     """
     Ejecuta el pipeline ETL completo para el usuario autenticado.
-    Fases: (1) obtener token valido, (2) extract, (3) transform, (4) load, (5) audit.
-    Usa carga incremental: solo trae reproducciones posteriores al ultimo cursor guardado.
+    Usa el cursor 'after' de Spotify para carga incremental correcta.
 
     Args:
         conn: Conexion activa a PostgreSQL.
         spotify_id (str): ID del usuario en Spotify (del JWT).
 
     Returns:
-        dict: Metricas de la ejecucion: registros insertados/omitidos por tabla,
-              duracion en ms, cursor utilizado y proximo cursor.
+        dict: Metricas de la ejecucion.
 
     Raises:
         Exception: Cualquier error queda registrado en etl_audit con status='error'.
     """
     start_ms = int(time.time() * 1000)
 
-    # Obtener user_id para las cargas
     with conn.cursor() as cur:
         cur.execute("SELECT user_id FROM dwh.dim_users WHERE spotify_id = %s", (spotify_id,))
         row = cur.fetchone()
     user_id = row[0] if row else None
 
-    # Obtener cursor de la ultima ejecucion exitosa
     cursor_after_ms = get_last_cursor(conn, spotify_id)
-
-    # Iniciar registro de auditoria
     audit_id = insert_audit_start(conn, spotify_id, cursor_after_ms)
 
     try:
-        # 1. Token valido (renueva si es necesario)
+        # 1. Token valido
         token = get_valid_spotify_token(conn, spotify_id)
 
         # 2. EXTRACT
         raw_artists = extract_top_artists(token)
-        raw_tracks  = extract_top_tracks(token)
-        raw_history = extract_recently_played(token, after_ms=cursor_after_ms)
+        raw_tracks = enrich_tracks_with_popularity(
+            token, extract_top_tracks(token), use_rank_fallback=True
+        )
+        raw_history, cursor_next_ms = extract_recently_played(token, after_ms=cursor_after_ms)
 
         # 3. TRANSFORM
         artists = transform_top_artists(raw_artists)
-        tracks  = transform_top_tracks(raw_tracks)
+        tracks = transform_top_tracks(raw_tracks)
         history = transform_recently_played(raw_history)
 
-        # 4. LOAD (orden: artists -> tracks -> history para respetar FK)
-        artists_in, artists_sk = load_dim_artists(conn, artists)
-        tracks_in,  tracks_sk  = load_dim_tracks(conn, tracks)
+        # Artistas y tracks del historial que pueden no estar en el top 50
+        history_artists = transform_top_artists([
+            item["track"]["artists"][0]
+            for item in raw_history
+            if item["track"].get("artists")
+        ])
+        history_raw_tracks = [
+            item["track"] for item in raw_history if item.get("track")
+        ]
+        history_raw_tracks = enrich_tracks_with_popularity(
+            token, history_raw_tracks, use_rank_fallback=False
+        )
+        history_tracks = transform_top_tracks(history_raw_tracks)
+
+        # 4. LOAD (top primero: trae genres/popularity; historial solo enriquece o crea faltantes)
+        artists_in, artists_sk = load_dim_artists(conn, artists + history_artists)
+        tracks_in, tracks_sk = load_dim_tracks(conn, tracks + history_tracks)
+        tracks_backfilled = backfill_dim_tracks_popularity(conn, token)
 
         history_in, history_sk = (0, 0)
         if user_id:
@@ -195,9 +197,7 @@ def run_etl(conn, spotify_id: str) -> dict:
 
         conn.commit()
 
-        # 5. Calcular cursor para la proxima ejecucion
-        cursor_next_ms = get_max_played_at_ms(conn, spotify_id)
-
+        # 5. cursor_next_ms viene directo de Spotify (cursors.after)
         duration_ms = int(time.time() * 1000) - start_ms
 
         metrics = {
@@ -206,6 +206,7 @@ def run_etl(conn, spotify_id: str) -> dict:
             "artists_skipped":   artists_sk,
             "tracks_inserted":   tracks_in,
             "tracks_skipped":    tracks_sk,
+            "tracks_backfilled": tracks_backfilled,
             "history_inserted":  history_in,
             "history_skipped":   history_sk,
         }
@@ -225,10 +226,6 @@ def run_etl(conn, spotify_id: str) -> dict:
         raise
 
 
-# ---------------------------------------------------------------------------
-# Query de estado
-# ---------------------------------------------------------------------------
-
 def get_etl_status(conn, spotify_id: str) -> list[dict]:
     """
     Retorna las ultimas 20 ejecuciones del ETL para el usuario desde dwh.etl_audit.
@@ -238,8 +235,7 @@ def get_etl_status(conn, spotify_id: str) -> list[dict]:
         spotify_id (str): ID del usuario en Spotify.
 
     Returns:
-        list[dict]: Lista de ejecuciones ordenadas por started_at DESC,
-                    con status, metricas, cursor y duracion.
+        list[dict]: Lista de ejecuciones ordenadas por started_at DESC.
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(

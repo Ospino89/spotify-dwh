@@ -119,7 +119,7 @@ def exchange_code_for_tokens(code: str, verifier: str) -> dict:
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": settings.spotify_redirect_uri,
-        "client_id": settings.spotify_client_id,
+        "client_id": settings.spotify_client_id.get_secret_value(),
         "code_verifier": verifier,
     })
 
@@ -140,7 +140,7 @@ def refresh_spotify_token(refresh_token: str) -> dict:
     return spotify_post_token({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": settings.spotify_client_id,
+        "client_id": settings.spotify_client_id.get_secret_value(),
     })
 
 
@@ -265,7 +265,7 @@ def build_spotify_auth_url(state: str, challenge: str) -> str:
     scopes = "user-read-private user-read-email user-top-read user-read-recently-played"
     params = (
         f"response_type=code"
-        f"&client_id={settings.spotify_client_id}"
+        f"&client_id={settings.spotify_client_id.get_secret_value()}"
         f"&redirect_uri={settings.spotify_redirect_uri}"
         f"&scope={scopes.replace(' ', '%20')}"
         f"&state={state}"

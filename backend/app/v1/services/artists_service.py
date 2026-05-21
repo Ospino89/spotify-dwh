@@ -63,14 +63,15 @@ def transform_top_artists(raw_artists: list[dict]) -> list[dict]:
 
 def load_dim_artists(conn, artists: list[dict]) -> tuple[int, int]:
     """
-    Inserta artistas en dwh.dim_artists con idempotencia via ON CONFLICT DO NOTHING.
+    Inserta o actualiza artistas en dwh.dim_artists (upsert por spotify_id).
+    En conflicto, enriquece genres/popularity sin borrar datos ya cargados desde top artists.
 
     Args:
         conn: Conexion activa a PostgreSQL.
         artists (list[dict]): Lista de artistas transformados por transform_top_artists.
 
     Returns:
-        tuple[int, int]: (insertados, omitidos) — conteo de registros nuevos vs ya existentes.
+        tuple[int, int]: (insertados, actualizados_omitidos) — nuevos vs filas ya existentes.
     """
     inserted = 0
     skipped = 0
@@ -80,7 +81,18 @@ def load_dim_artists(conn, artists: list[dict]) -> tuple[int, int]:
                 """
                 INSERT INTO dwh.dim_artists (spotify_id, name, popularity, followers_count, genres, loaded_at)
                 VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (spotify_id) DO NOTHING
+                ON CONFLICT (spotify_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    popularity = COALESCE(EXCLUDED.popularity, dwh.dim_artists.popularity),
+                    followers_count = COALESCE(EXCLUDED.followers_count, dwh.dim_artists.followers_count),
+                    genres = CASE
+                        WHEN EXCLUDED.genres IS NOT NULL
+                             AND cardinality(EXCLUDED.genres) > 0
+                        THEN EXCLUDED.genres
+                        ELSE dwh.dim_artists.genres
+                    END,
+                    loaded_at = CURRENT_TIMESTAMP
+                RETURNING (xmax = 0) AS was_inserted
                 """,
                 (
                     artist["spotify_id"],
@@ -90,7 +102,8 @@ def load_dim_artists(conn, artists: list[dict]) -> tuple[int, int]:
                     artist["genres"],
                 ),
             )
-            if cur.rowcount > 0:
+            row = cur.fetchone()
+            if row and row[0]:
                 inserted += 1
             else:
                 skipped += 1
