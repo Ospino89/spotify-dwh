@@ -125,3 +125,5 @@ def backfill_genres_via_musicbrainz(conn, limit: int = 30) -> int:
             f"({len(rows)} artistas probados)."
         )
     return updated
+
+
