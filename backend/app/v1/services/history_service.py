@@ -259,3 +259,60 @@ def get_listening_history(conn, spotify_id: str, limit: int = 50) -> list[dict]:
         )
         rows = cur.fetchall()
     return [dict(r) for r in rows]
+
+
+def get_plays_by_hour(conn, spotify_id: str) -> list[int]:
+    """
+    Agrega reproducciones por hora sobre TODO el historial del usuario en el DWH.
+    Misma logica que la pregunta analitica 1 (no limita a las ultimas N filas).
+
+    Returns:
+        list[int]: 24 enteros; indice i = cantidad de plays en la hora i (0-23).
+    """
+    hours = [0] * 24
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT f.hour_of_day, COUNT(*)::int AS total
+            FROM dwh.fact_listening_history f
+            JOIN dwh.dim_users u ON u.user_id = f.user_id
+            WHERE u.spotify_id = %s
+              AND f.hour_of_day IS NOT NULL
+              AND f.hour_of_day >= 0
+              AND f.hour_of_day < 24
+            GROUP BY f.hour_of_day
+            """,
+            (spotify_id,),
+        )
+        for row in cur.fetchall():
+            hours[row[0]] = row[1]
+    return hours
+
+
+def get_dominant_genres(conn, spotify_id: str, limit: int = 10) -> list[dict]:
+    """
+    Generos dominantes por reproducciones (pregunta analitica 4).
+    Cuenta plays en fact_listening_history x UNNEST(genres) de dim_artists.
+
+    Returns:
+        list[dict]: [{"name": "latin", "plays": 42}, ...]
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT g.genre AS genero, COUNT(*)::int AS total
+            FROM dwh.fact_listening_history f
+            JOIN dwh.dim_users u ON u.user_id = f.user_id
+            JOIN dwh.dim_artists a ON a.artist_id = f.artist_id
+            CROSS JOIN LATERAL UNNEST(COALESCE(a.genres, ARRAY[]::text[])) AS g(genre)
+            WHERE u.spotify_id = %s
+              AND g.genre IS NOT NULL
+              AND TRIM(g.genre) <> ''
+            GROUP BY g.genre
+            ORDER BY total DESC
+            LIMIT %s
+            """,
+            (spotify_id, limit),
+        )
+        rows = cur.fetchall()
+    return [{"name": row[0], "plays": row[1]} for row in rows]

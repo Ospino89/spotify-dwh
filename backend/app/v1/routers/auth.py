@@ -104,7 +104,8 @@ def callback(
 
     # 6. Redirigir al frontend con el token
     from app.core.config import settings
+    frontend_base = str(settings.frontend_url).rstrip("/")
     return RedirectResponse(
-        url=f"{settings.frontend_url}?token={jwt_token}",
+        url=f"{frontend_base}/callback?token={jwt_token}",
         status_code=302,
     )

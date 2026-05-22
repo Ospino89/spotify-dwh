@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends
 
 from app.core.database import get_db_dependency
 from app.core.security import get_current_user
-from app.v1.services.etl_service import get_etl_status, run_etl
+from app.v1.services.etl_service import get_etl_status, repair_artists_popularity, run_etl
 
 router = APIRouter()
 
@@ -36,6 +36,22 @@ def trigger_etl(
         dict: Metricas de la ejecucion (registros insertados, omitidos, duracion).
     """
     return run_etl(conn, current_user)
+
+
+@router.post(
+    "/repair-artists",
+    summary="Rellena popularity NULL en dim_artists",
+    include_in_schema=False,
+)
+def repair_artists(
+    current_user: str = Depends(get_current_user),
+    conn=Depends(get_db_dependency),
+):
+    """
+    Repara popularity y genres sin extract completo.
+    Genres: MusicBrainz si Spotify devuelve genres vacios (~45s, hasta 40 artistas).
+    """
+    return repair_artists_popularity(conn, current_user)
 
 
 @router.get("/status", summary="Estado de las ultimas ejecuciones del ETL")

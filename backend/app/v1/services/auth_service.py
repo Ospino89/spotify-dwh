@@ -184,7 +184,9 @@ def upsert_user_with_tokens(conn, profile: dict, token_data: dict) -> str:
                 profile.get("display_name"),
                 profile.get("email"),
                 profile.get("country"),
-                profile.get("followers", {}).get("total"),
+                (profile.get("followers") or {}).get("total")
+                if isinstance(profile.get("followers"), dict)
+                else None,
                 profile.get("product"),
                 token_data.get("access_token"),
                 token_data.get("refresh_token"),

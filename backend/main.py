@@ -22,11 +22,20 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS — solo permite peticiones desde FRONTEND_URL
+# CORS — FRONTEND_URL + origenes locales de Vite en desarrollo
 # ---------------------------------------------------------------------------
+_frontend = str(settings.frontend_url).rstrip("/")
+_cors_origins = list({
+    _frontend,
+    f"{_frontend}/",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+})
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

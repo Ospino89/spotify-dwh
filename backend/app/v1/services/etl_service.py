@@ -14,6 +14,11 @@ import psycopg2.extras
 from app.v1.services.auth_service import get_valid_spotify_token
 from app.v1.services.artists_service import (
     extract_top_artists,
+    enrich_artists_with_metadata,
+    backfill_artist_popularity_from_plays,
+    backfill_artist_popularity_fallback_rank,
+    sync_artist_genres,
+    backfill_dim_artists_metadata,
     transform_top_artists,
     load_dim_artists,
 )
@@ -161,23 +166,39 @@ def run_etl(conn, spotify_id: str) -> dict:
         token = get_valid_spotify_token(conn, spotify_id)
 
         # 2. EXTRACT
-        raw_artists = extract_top_artists(token)
+        raw_top_artists = extract_top_artists(token)
+        raw_artists = raw_top_artists
         raw_tracks = enrich_tracks_with_popularity(
             token, extract_top_tracks(token), use_rank_fallback=True
         )
         raw_history, cursor_next_ms = extract_recently_played(token, after_ms=cursor_after_ms)
 
         # 3. TRANSFORM
-        artists = transform_top_artists(raw_artists)
+        artists = transform_top_artists(raw_artists, use_rank_fallback=True)
         tracks = transform_top_tracks(raw_tracks)
         history = transform_recently_played(raw_history)
 
-        # Artistas y tracks del historial que pueden no estar en el top 50
-        history_artists = transform_top_artists([
-            item["track"]["artists"][0]
-            for item in raw_history
-            if item["track"].get("artists")
-        ])
+        # Artistas del historial: reutilizar metadata del top (sin /artists catalogo)
+        top_by_id = {a["id"]: a for a in raw_top_artists if a.get("id")}
+        seen_artist_ids: set[str] = set()
+        history_raw_artists = []
+        for item in raw_history:
+            track = item.get("track") or {}
+            artists_on_track = track.get("artists") or []
+            if not artists_on_track:
+                continue
+            artist = artists_on_track[0]
+            aid = artist.get("id")
+            if aid and aid not in seen_artist_ids:
+                seen_artist_ids.add(aid)
+                history_raw_artists.append(artist)
+        history_raw_artists = enrich_artists_with_metadata(
+            token,
+            history_raw_artists,
+            known_artists_by_id=top_by_id,
+            use_catalog_api=False,
+        )
+        history_artists = transform_top_artists(history_raw_artists, use_rank_fallback=False)
         history_raw_tracks = [
             item["track"] for item in raw_history if item.get("track")
         ]
@@ -186,14 +207,28 @@ def run_etl(conn, spotify_id: str) -> dict:
         )
         history_tracks = transform_top_tracks(history_raw_tracks)
 
-        # 4. LOAD (top primero: trae genres/popularity; historial solo enriquece o crea faltantes)
-        artists_in, artists_sk = load_dim_artists(conn, artists + history_artists)
+        # 4. LOAD: top primero (genres reales), luego historial (no pisa genres con {})
+        artists_in, artists_sk = load_dim_artists(conn, artists)
+        h_in, h_sk = load_dim_artists(conn, history_artists)
+        artists_in += h_in
+        artists_sk += h_sk
         tracks_in, tracks_sk = load_dim_tracks(conn, tracks + history_tracks)
-        tracks_backfilled = backfill_dim_tracks_popularity(conn, token)
 
         history_in, history_sk = (0, 0)
         if user_id:
             history_in, history_sk = load_fact_listening_history(conn, history, user_id)
+
+        # 5. Backfill despues del historial (plays en fact ya existen)
+        tracks_backfilled = backfill_dim_tracks_popularity(conn, token)
+        genre_stats = sync_artist_genres(conn, token, raw_top_artists)
+        genres_backfilled = (
+            genre_stats["genres_backfilled_from_top"]
+            + genre_stats["genres_backfilled_from_search"]
+            + genre_stats.get("genres_backfilled_from_musicbrainz", 0)
+        )
+        artists_backfilled = backfill_artist_popularity_from_plays(conn)
+        # Sin catalogo /artists (403 en Development)
+        artists_backfilled += backfill_artist_popularity_fallback_rank(conn)
 
         conn.commit()
 
@@ -207,6 +242,9 @@ def run_etl(conn, spotify_id: str) -> dict:
             "tracks_inserted":   tracks_in,
             "tracks_skipped":    tracks_sk,
             "tracks_backfilled": tracks_backfilled,
+            "genres_backfilled": genres_backfilled,
+            **genre_stats,
+            "artists_backfilled": artists_backfilled,
             "history_inserted":  history_in,
             "history_skipped":   history_sk,
         }
@@ -224,6 +262,24 @@ def run_etl(conn, spotify_id: str) -> dict:
         duration_ms = int(time.time() * 1000) - start_ms
         update_audit_error(conn, audit_id, str(exc), duration_ms)
         raise
+
+
+def repair_artists_popularity(conn, spotify_id: str) -> dict:
+    """
+    Repara popularity/genres en dim_artists sin volver a extraer de Spotify.
+    Util cuando el DWH ya tiene filas pero popularity quedo NULL.
+    """
+    token = get_valid_spotify_token(conn, spotify_id)
+    genre_stats = sync_artist_genres(conn, token, musicbrainz_limit=40)
+    from_plays = backfill_artist_popularity_from_plays(conn)
+    from_rank = backfill_artist_popularity_fallback_rank(conn)
+    conn.commit()
+    return {
+        "status": "success",
+        **genre_stats,
+        "artists_backfilled_from_plays": from_plays,
+        "artists_backfilled_from_rank": from_rank,
+    }
 
 
 def get_etl_status(conn, spotify_id: str) -> list[dict]:

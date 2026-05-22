@@ -57,7 +57,10 @@ def _fetch_popularity_by_track_ids(token: str, track_ids: list[str]) -> dict[str
             for track in data.get("tracks") or []:
                 if track and track.get("id") and track.get("popularity") is not None:
                     popularity_by_id[track["id"]] = track["popularity"]
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as err:
+            # Catalogo bloqueado o rate limit: no llamar track por track (provoca 429)
+            if err.response.status_code in (403, 429):
+                continue
             for tid in chunk:
                 if tid not in popularity_by_id:
                     pop = _fetch_single_track_popularity(token, tid)
